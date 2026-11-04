@@ -178,6 +178,44 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
+const SKILL_ARCHIVE_DATA_URL_MIME_TYPES = new Set([
+  "application/zip",
+  "application/octet-stream",
+  "application/x-zip-compressed",
+]);
+
+function decodeSkillArchiveDataUrl(source: string): Uint8Array | null {
+  if (!/^data:/i.test(source)) return null;
+  const match = /^data:([^;,]+);base64,([a-z0-9+/]*={0,2})$/i.exec(source);
+  if (!match || !SKILL_ARCHIVE_DATA_URL_MIME_TYPES.has(match[1].toLowerCase())) {
+    throw new SkillArchiveError(
+      "invalid_archive",
+      "Skill archive data URL must use a supported ZIP media type and base64 encoding",
+    );
+  }
+  const encoded = match[2];
+  const maxEncodedBytes = Math.ceil(SKILL_ARCHIVE_MAX_COMPRESSED_BYTES / 3) * 4;
+  if (encoded.length === 0 || encoded.length > maxEncodedBytes) {
+    throw new SkillArchiveError(
+      "archive_limit_exceeded",
+      "Skill archive compressed size is outside the supported limit",
+    );
+  }
+  let bytes: Uint8Array;
+  try {
+    bytes = decodeBase64(encoded);
+  } catch {
+    throw new SkillArchiveError("invalid_archive", "Skill archive data URL contains invalid base64");
+  }
+  if (bytes.byteLength === 0 || bytes.byteLength > SKILL_ARCHIVE_MAX_COMPRESSED_BYTES) {
+    throw new SkillArchiveError(
+      "archive_limit_exceeded",
+      "Skill archive compressed size is outside the supported limit",
+    );
+  }
+  return bytes;
+}
+
 // ── Dependencies ──
 
 export interface SkillRouteDeps {
@@ -854,7 +892,7 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
     },
   );
 
-  // POST /add — install skills from GitHub repo or local path
+  // POST /add — install skills from a portable archive, Git repository, or local path
   app.openapi(
     createRoute({
       method: "post", path: "/add", tags: ["Skills"], summary: "Install skills from a source",
@@ -863,7 +901,9 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
           content: {
             "application/json": {
               schema: z.object({
-                source: z.string().min(1).describe("GitHub owner/repo, full URL, or local path"),
+                source: z.string().min(1).describe(
+                  "Portable .skill/.zip data URL, GitHub owner/repo, HTTP(S) Git URL, or local path",
+                ),
                 skillNames: z.array(z.string()).optional().describe("Only install specific skill names"),
                 force: z.boolean().optional().describe("Overwrite existing skills"),
                 assignTo: z.string().optional().describe("Agent name to assign the installed skills to. If provided, the agent's `skills` list is updated with the newly installed skill names."),
@@ -875,29 +915,116 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
       responses: {
         200: { content: { "application/json": { schema: z.object({ ok: z.boolean(), data: z.any() }) } }, description: "Install result" },
         400: { content: { "application/json": { schema: z.object({ ok: z.literal(false), error: z.string() }) } }, description: "Error" },
+        409: { content: { "application/json": { schema: z.object({ ok: z.literal(false), error: z.string() }) } }, description: "Skill conflict" },
+        413: { content: { "application/json": { schema: z.object({ ok: z.literal(false), error: z.string() }) } }, description: "Archive too large" },
       },
     }),
     async (c: any) => {
       const deps = getDeps();
       const { fs, shell, polpoDir, getAgents, updateAgentSkills, installFs } = deps;
-      if (!shell) {
-        return c.json({ ok: false, error: "Skill installation not available (no shell)" }, 400);
-      }
-      const scanFs = installFs ?? fs;
-
       const { source, skillNames, force, assignTo } = await c.req.json();
+
+      // MCP clients may already hold a portable .skill as a data URL. Import
+      // those bytes directly through the canonical archive validator rather
+      // than treating the data URL as a Git clone target and acquiring a
+      // sandbox/R2 mount unnecessarily.
+      try {
+        const archiveBytes = decodeSkillArchiveDataUrl(source);
+        if (archiveBytes) {
+          const imported = await unpackSkillArchive(archiveBytes);
+          const validated = await validateBundle(imported.bundle.name, imported.bundle.files);
+          const publicSource = "archive:data-url";
+          if (skillNames && !skillNames.includes(validated.bundle.name)) {
+            return c.json({
+              ok: false,
+              error: `Requested skills not found: ${skillNames.join(", ")}. Available: ${validated.bundle.name}`,
+              code: "skill_not_found",
+            }, 400);
+          }
+
+          const existing = await currentBundle(deps, validated.bundle.name);
+          if (existing && !force) {
+            return c.json({
+              ok: true,
+              data: {
+                installed: [],
+                skipped: [validated.bundle.name],
+                errors: [],
+                source: publicSource,
+                assigned: [],
+              },
+            });
+          }
+
+          const stored = await persistValidatedBundle(deps, validated, {
+            conflict: force ? "replace" : "error",
+            source: publicSource,
+          });
+          if (stored.conflict) {
+            return c.json({
+              ok: false,
+              error: `Skill "${validated.bundle.name}" already exists with different content`,
+              code: "skill_conflict",
+              data: stored.receipt,
+            }, 409);
+          }
+
+          const installed = [validated.bundle.name];
+          const skipped = stored.receipt.changed === false ? [validated.bundle.name] : [];
+          const errors: string[] = [];
+          let assigned: string[] = [];
+          if (assignTo && updateAgentSkills) {
+            const agents = await getAgents();
+            const agent = agents.find((candidate) => candidate.name === assignTo);
+            if (!agent) {
+              errors.push(`assignTo: agent "${assignTo}" not found`);
+            } else {
+              const current = agent.skills ?? [];
+              if (!current.includes(validated.bundle.name)) {
+                await updateAgentSkills(assignTo, [...current, validated.bundle.name]);
+                assigned = [validated.bundle.name];
+              }
+            }
+          } else if (assignTo) {
+            errors.push("assignTo: skill assignment is not supported");
+          }
+
+          return c.json({
+            ok: true,
+            data: { installed, skipped, errors, source: publicSource, assigned },
+          });
+        }
+      } catch (error) {
+        const code = error instanceof SkillArchiveError ? error.code : "invalid_skill";
+        const status = code === "archive_limit_exceeded" ? 413 : 400;
+        return c.json({
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+          code,
+        }, status);
+      }
 
       // Parse source
       let cloneUrl: string | null = null;
       let sourceDir: string;
+      let scanFs: FileSystem;
 
       if (source.startsWith("/") || source.startsWith("./") || source.startsWith("../")) {
-        // Local path
-        if (!(await scanFs.exists(source))) {
+        // Prefer the durable project filesystem. A host may also expose an
+        // explicit scratch/install filesystem for sandbox-local paths.
+        if (await fs.exists(source)) {
+          scanFs = fs;
+        } else if (installFs && await installFs.exists(source)) {
+          scanFs = installFs;
+        } else {
           return c.json({ ok: false, error: `Local path not found: ${source}` }, 400);
         }
         sourceDir = source;
       } else {
+        if (!shell) {
+          return c.json({ ok: false, error: "Skill installation not available (no shell)" }, 400);
+        }
+        scanFs = installFs ?? fs;
         // GitHub — clone to temp dir
         const ghMatch = source.match(/github\.com\/([^/]+\/[^/]+)/);
         const ownerRepo = ghMatch
@@ -969,7 +1096,7 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
 
       if (found.length === 0) {
         // Cleanup
-        if (cloneUrl) await shell.execute(`rm -rf "${sourceDir}"`).catch(() => {});
+        if (cloneUrl && shell) await shell.execute(`rm -rf "${sourceDir}"`).catch(() => {});
         return c.json({ ok: false, error: `No skills found in ${source}` }, 400);
       }
 
@@ -979,7 +1106,7 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
         : found;
 
       if (skillNames && toInstall.length === 0) {
-        if (cloneUrl) await shell.execute(`rm -rf "${sourceDir}"`).catch(() => {});
+        if (cloneUrl && shell) await shell.execute(`rm -rf "${sourceDir}"`).catch(() => {});
         return c.json({
           ok: false,
           error: `Requested skills not found: ${skillNames.join(", ")}. Available: ${found.map((s) => s.name).join(", ")}`,
@@ -1014,7 +1141,7 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
       }
 
       // Cleanup cloned repo
-      if (cloneUrl) await shell.execute(`rm -rf "${sourceDir}"`).catch(() => {});
+      if (cloneUrl && shell) await shell.execute(`rm -rf "${sourceDir}"`).catch(() => {});
 
       // Optional: assign installed skills to an agent. Closes the onboarding
       // "install + assign" loop in a single call. Silent no-op if the agent
