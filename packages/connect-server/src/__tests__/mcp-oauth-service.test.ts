@@ -200,9 +200,23 @@ describe("ConnectService MCP OAuth", () => {
     });
   });
 
-  it("omits vendor OAuth scopes without dropping Polpo MCP capabilities", async () => {
-    exchangeMock.mockResolvedValueOnce({ access_token: "default-access", expires_in: 3600 });
-    const { service } = harness();
+  it("discovers vendor OAuth scopes without dropping Polpo MCP capabilities", async () => {
+    discoverMock.mockResolvedValue({
+      authorizationServerUrl: "https://auth.example/",
+      authorizationServerMetadata: {
+        authorization_endpoint: "https://auth.example/authorize",
+        token_endpoint: "https://auth.example/token",
+        registration_endpoint: "https://auth.example/register",
+        scopes_supported: ["read", "write", "openid"],
+        code_challenge_methods_supported: ["S256"],
+      },
+      resourceMetadata: {
+        resource: "https://mcp.example/mcp",
+        scopes_supported: ["read", "write"],
+      },
+    });
+    exchangeMock.mockResolvedValueOnce({ access_token: "default-access", expires_in: 3600, scope: "read write" });
+    const { service, store, secrets } = harness();
     const started = await service.startMcpOAuth({
       url: "https://mcp.example/mcp",
       redirectUri: "https://polpo.example/v1/connect/oauth/callback",
@@ -211,8 +225,12 @@ describe("ConnectService MCP OAuth", () => {
       oauthScopes: [],
     });
 
-    expect(registerMock.mock.calls[0]?.[1]).toMatchObject({ scope: undefined });
-    expect(startMock.mock.calls[0]?.[1]).toMatchObject({ scope: undefined });
+    expect(registerMock.mock.calls[0]?.[1]).toMatchObject({ scope: "read write" });
+    expect(startMock.mock.calls[0]?.[1]).toMatchObject({ scope: "read write" });
+    const pending = await store.getOAuthState(started.state);
+    expect(await secrets.getSecret(pending!.temporarySecretRef!)).toMatchObject({
+      mcpOAuth: { authorizationScopes: ["read", "write"] },
+    });
     const connection = await service.completeMcpOAuth({ state: started.state, code: "code-1" });
     expect(connection.grantedScopes).toEqual(["tools:call", "tools:read"]);
     await expect(service.getToken({ connectionId: connection.id, scopes: ["tools:call"] }))

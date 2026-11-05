@@ -59,6 +59,23 @@ describe("MCP OAuth protocol", () => {
     });
   });
 
+  it("prefers protected-resource scopes over broader authorization-server scopes", async () => {
+    discoverMock.mockResolvedValueOnce({
+      ...discovery,
+      authorizationServerMetadata: {
+        ...discovery.authorizationServerMetadata,
+        scopes_supported: ["read", "write", "openid", "email"],
+      },
+      resourceMetadata: {
+        ...discovery.resourceMetadata,
+        scopes_supported: ["read", "write"],
+      },
+    });
+    const protocol = createMcpOAuthProtocol({ fetch });
+    const result = await protocol.inspect({ url: "https://mcp.example/mcp" });
+    expect(result.discovery?.scopesSupported).toEqual(["read", "write"]);
+  });
+
   it("registers a DCR client once and reuses it for subsequent authorizations", async () => {
     const cache = new Map<string, any>();
     const registrations = {

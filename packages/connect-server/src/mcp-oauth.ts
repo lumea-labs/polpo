@@ -224,7 +224,12 @@ function normalizeDiscovery(
   }
   const registrationEndpoint = text(metadata?.registration_endpoint);
   const revocationEndpoint = text(metadata?.revocation_endpoint);
-  const scopesSupported = strings(metadata?.scopes_supported);
+  // The protected resource describes the permissions required by this MCP
+  // endpoint. Authorization-server metadata may also advertise identity or
+  // unrelated product scopes (for example `openid` and `email`), so it is only
+  // a fallback when the resource did not publish its own scope set.
+  const scopesSupported = strings(protectedResource?.scopes_supported)
+    ?? strings(metadata?.scopes_supported);
   const codeChallengeMethodsSupported = strings(metadata?.code_challenge_methods_supported);
   return {
     resource: normalizeHttpsUrl(text(protectedResource?.resource) ?? resource),

@@ -657,7 +657,13 @@ export function createConnectService(options: CreateConnectServiceOptions): Conn
       transport,
       redirectUri: input.redirectUri,
       state,
-      scopes: oauthScopes,
+      // An explicitly separated but empty host scope list means "use the
+      // provider metadata". This preserves legacy callers (which omit
+      // oauthScopes and still receive the old mapping), while allowing modern
+      // hosts to avoid leaking Polpo capability names into vendor OAuth.
+      scopes: separatesAuthorizationScopes && oauthScopes.length === 0
+        ? undefined
+        : oauthScopes,
       mode: input.mode,
       clientName: input.clientName,
       clientUri: input.clientUri,
@@ -665,8 +671,11 @@ export function createConnectService(options: CreateConnectServiceOptions): Conn
       preRegisteredClient: input.preRegisteredClient,
       registrationNamespace: setupContext?.fingerprint,
     });
+    const authorizationScopes = separatesAuthorizationScopes && oauthScopes.length === 0
+      ? normalizeScopes(protocolStart.material.discovery.scopesSupported ?? [])
+      : oauthScopes;
     const started = separatesAuthorizationScopes
-      ? { ...protocolStart, material: { ...protocolStart.material, authorizationScopes: oauthScopes } }
+      ? { ...protocolStart, material: { ...protocolStart.material, authorizationScopes } }
       : protocolStart;
     const createdAt = now();
     const expiresAt = new Date(setupContext?.authorizationExpiresAt ?? createdAt.getTime() + oauthStateTtlMs);
