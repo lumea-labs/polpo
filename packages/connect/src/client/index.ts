@@ -103,7 +103,10 @@ export interface StartMcpOAuthRequest extends InspectMcpOAuthRequest, Connection
   providerId?: string;
   authenticationId?: string;
   name?: string;
+  /** Polpo capability grants, independent from provider OAuth scopes. */
   scopes?: string[];
+  /** Provider OAuth scopes. Empty means the authorization server chooses its default. */
+  oauthScopes?: string[];
   mode: McpOAuthClientMode;
   clientMetadataUrl?: string;
   preRegisteredClient?: McpOAuthClientInformation;

@@ -220,7 +220,10 @@ export interface StartMcpOAuthInput extends ConnectionCreationContext {
   name?: string;
   url: string;
   transport?: McpConnectionTransport;
+  /** Polpo capability grants. These never transit to the MCP authorization server. */
   scopes?: string[];
+  /** Provider OAuth scopes. Omit or pass an empty list to use the server default. */
+  oauthScopes?: string[];
   projectId?: string;
   orgId?: string;
   redirectUri: string;
@@ -641,15 +644,20 @@ export function createConnectService(options: CreateConnectServiceOptions): Conn
     const url = normalizeMcpUrl(input.url, false);
     const transport = input.transport ?? "http";
     const requestedScopes = assertAllowedScopes(provider, input.scopes ?? provider.auth.defaultScopes);
+    // MCP capabilities and provider OAuth scopes are separate authority
+    // domains. Keep legacy callers compatible, while allowing hosts to opt in
+    // to the correct split by supplying oauthScopes (including an empty list).
+    const separatesAuthorizationScopes = input.oauthScopes !== undefined;
+    const oauthScopes = normalizeScopes(input.oauthScopes ?? requestedScopes);
     const state = createRoutedOpaqueToken();
     const pendingConnectionId = createId("conn");
     const temporarySecretRef = createId("connsec");
-    const started = await mcpOAuth.start({
+    const protocolStart = await mcpOAuth.start({
       url,
       transport,
       redirectUri: input.redirectUri,
       state,
-      scopes: requestedScopes,
+      scopes: oauthScopes,
       mode: input.mode,
       clientName: input.clientName,
       clientUri: input.clientUri,
@@ -657,6 +665,9 @@ export function createConnectService(options: CreateConnectServiceOptions): Conn
       preRegisteredClient: input.preRegisteredClient,
       registrationNamespace: setupContext?.fingerprint,
     });
+    const started = separatesAuthorizationScopes
+      ? { ...protocolStart, material: { ...protocolStart.material, authorizationScopes: oauthScopes } }
+      : protocolStart;
     const createdAt = now();
     const expiresAt = new Date(setupContext?.authorizationExpiresAt ?? createdAt.getTime() + oauthStateTtlMs);
     if (!(expiresAt.getTime() > createdAt.getTime())) throw new ConnectError("setup_expired", "Setup authorization expired during discovery");
@@ -1059,12 +1070,13 @@ export function createConnectService(options: CreateConnectServiceOptions): Conn
         // exchange, reuse the staged encrypted tokens when retrying the claim.
         await authorizeOAuth("callback", "mcp", claimed);
         const currentMaterial = await currentMcpMaterial(transient.mcpOAuth, claimed.oauthClientId, claimed.oauthClientFingerprint);
+        const oauthScopes = currentMaterial.authorizationScopes ?? claimed.requestedScopes;
         const tokens = transient.mcpOAuth.tokens ?? await mcpOAuth.complete({
           material: currentMaterial,
           code: input.code!,
-          requestedScopes: claimed.requestedScopes,
+          requestedScopes: oauthScopes,
         });
-        assertGrantedScopes(tokens.scopes ?? claimed.requestedScopes, claimed.requestedScopes);
+        if (oauthScopes.length) assertGrantedScopes(tokens.scopes ?? oauthScopes, oauthScopes);
         const grantedScopes = assertAllowedScopes(provider, claimed.requestedScopes);
         const material: McpOAuthSecretMaterial = {
           ...currentMaterial,
@@ -1613,7 +1625,9 @@ export function createConnectService(options: CreateConnectServiceOptions): Conn
                 const tokens = refreshed.tokens!;
                 await options.store.updateConnection(connection.id, {
                   tokenExpiresAt: tokens.expiresAt,
-                  grantedScopes: current.grantedScopes.filter((scope) => tokens.scopes?.includes(scope)),
+                  grantedScopes: currentMaterial.authorizationScopes !== undefined
+                    ? current.grantedScopes
+                    : current.grantedScopes.filter((scope) => tokens.scopes?.includes(scope)),
                   updatedAt: now().toISOString(),
                 });
                 return refreshed;
@@ -1626,7 +1640,9 @@ export function createConnectService(options: CreateConnectServiceOptions): Conn
               throw new ConnectError("refresh_unavailable", "MCP OAuth token refresh could not be coordinated");
             }
           }
-          assertGrantedScopes(material.tokens!.scopes ?? connection.grantedScopes, scopes);
+          if (material.authorizationScopes === undefined) {
+            assertGrantedScopes(material.tokens!.scopes ?? connection.grantedScopes, scopes);
+          }
           const current = await assertConnectionCurrent(connection, scopes);
           await authorizeConnection("credential", current, true);
           return {
@@ -1634,7 +1650,9 @@ export function createConnectService(options: CreateConnectServiceOptions): Conn
             accessToken: material.tokens!.accessToken,
             tokenType: material.tokens!.tokenType ?? "Bearer",
             expiresAt: material.tokens!.expiresAt,
-            scopes: current.grantedScopes.filter((scope) => (material.tokens!.scopes ?? current.grantedScopes).includes(scope)),
+            scopes: material.authorizationScopes !== undefined
+              ? scopes
+              : current.grantedScopes.filter((scope) => (material.tokens!.scopes ?? current.grantedScopes).includes(scope)),
             connectionId: connection.id,
             providerId: connection.providerId,
             metadata: connection.metadata as McpConnectionMetadata | undefined,

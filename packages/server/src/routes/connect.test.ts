@@ -105,7 +105,8 @@ describe("connectRoutes", () => {
     const post = (path: string, body: unknown) => app.request(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     expect((await post("/mcp/inspect", { url: "https://mcp.example/mcp", transport: "sse" })).status).toBe(200);
     const input = { providerId: "notes", authenticationId: "oauth", url: "https://mcp.example/mcp", mode: "dynamic",
-      redirectUri: "https://host.example/v1/connect/oauth/callback", audience: "personal", subject: { type: "user", id: "builder" } };
+      redirectUri: "https://host.example/v1/connect/oauth/callback", scopes: ["tools:read", "tools:call"], oauthScopes: [],
+      audience: "personal", subject: { type: "user", id: "builder" } };
     expect((await post("/mcp/oauth/start", input)).status).toBe(200);
     expect(inspect).toHaveBeenCalledWith({ url: "https://mcp.example/mcp", transport: "sse" });
     expect(start).toHaveBeenCalledWith(input);

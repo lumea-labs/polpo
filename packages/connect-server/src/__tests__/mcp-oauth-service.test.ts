@@ -157,6 +157,68 @@ describe("ConnectService MCP OAuth", () => {
     expect(exchangeMock).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps Polpo MCP capabilities separate from provider OAuth scopes", async () => {
+    exchangeMock.mockResolvedValueOnce({
+      access_token: "vendor-access",
+      refresh_token: "vendor-refresh",
+      expires_in: 3600,
+      scope: "vendor.read",
+    });
+    refreshMock.mockResolvedValueOnce({
+      access_token: "vendor-access-2",
+      refresh_token: "vendor-refresh-2",
+      expires_in: 3600,
+      scope: "vendor.read",
+    });
+    const { service, store, secrets } = harness();
+    const started = await service.startMcpOAuth({
+      url: "https://mcp.example/mcp",
+      redirectUri: "https://polpo.example/v1/connect/oauth/callback",
+      mode: "dynamic",
+      scopes: ["tools:read", "tools:call"],
+      oauthScopes: ["vendor.read"],
+    });
+
+    expect(registerMock.mock.calls[0]?.[1]).toMatchObject({ scope: "vendor.read" });
+    expect(startMock.mock.calls[0]?.[1]).toMatchObject({ scope: "vendor.read" });
+    expect(await store.getOAuthState(started.state)).toMatchObject({
+      requestedScopes: ["tools:call", "tools:read"],
+    });
+    const pending = await store.getOAuthState(started.state);
+    expect(await secrets.getSecret(pending!.temporarySecretRef!)).toMatchObject({
+      mcpOAuth: { authorizationScopes: ["vendor.read"] },
+    });
+
+    const connection = await service.completeMcpOAuth({ state: started.state, code: "code-1" });
+    expect(connection.grantedScopes).toEqual(["tools:call", "tools:read"]);
+    await expect(service.getToken({ connectionId: connection.id, scopes: ["tools:call"] }))
+      .resolves.toMatchObject({ accessToken: "vendor-access", scopes: ["tools:call"] });
+    await expect(service.getToken({ connectionId: connection.id, scopes: ["tools:call"], forceRefresh: true }))
+      .resolves.toMatchObject({ accessToken: "vendor-access-2", scopes: ["tools:call"] });
+    await expect(store.getConnection(connection.id)).resolves.toMatchObject({
+      grantedScopes: ["tools:call", "tools:read"],
+    });
+  });
+
+  it("omits vendor OAuth scopes without dropping Polpo MCP capabilities", async () => {
+    exchangeMock.mockResolvedValueOnce({ access_token: "default-access", expires_in: 3600 });
+    const { service } = harness();
+    const started = await service.startMcpOAuth({
+      url: "https://mcp.example/mcp",
+      redirectUri: "https://polpo.example/v1/connect/oauth/callback",
+      mode: "dynamic",
+      scopes: ["tools:read", "tools:call"],
+      oauthScopes: [],
+    });
+
+    expect(registerMock.mock.calls[0]?.[1]).toMatchObject({ scope: undefined });
+    expect(startMock.mock.calls[0]?.[1]).toMatchObject({ scope: undefined });
+    const connection = await service.completeMcpOAuth({ state: started.state, code: "code-1" });
+    expect(connection.grantedScopes).toEqual(["tools:call", "tools:read"]);
+    await expect(service.getToken({ connectionId: connection.id, scopes: ["tools:call"] }))
+      .resolves.toMatchObject({ accessToken: "default-access", scopes: ["tools:call"] });
+  });
+
   it("releases a failed callback claim so a retry can succeed", async () => {
     const { service, store } = harness();
     const started = await service.startMcpOAuth({

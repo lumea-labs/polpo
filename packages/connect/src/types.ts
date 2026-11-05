@@ -422,6 +422,8 @@ export interface McpOAuthSecretMaterial {
   redirectUri: string;
   discovery: McpOAuthDiscovery;
   client: McpOAuthClientInformation;
+  /** Presence marks provider OAuth scopes as independent from Polpo MCP capabilities. */
+  authorizationScopes?: string[];
   tokens?: TokenSet;
   codeVerifier?: string;
 }

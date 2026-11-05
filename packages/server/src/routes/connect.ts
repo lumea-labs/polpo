@@ -60,6 +60,7 @@ const createMcpBody = createApiKeyConnectionBody.omit({ apiKey: true }).extend({
 
 const startMcpOAuthBody = createMcpBody.omit({ auth: true, apiKey: true, bearerToken: true, headerName: true }).extend({
   redirectUri: z.string().url(),
+  oauthScopes: z.array(z.string()).optional(),
   mode: z.enum(["dynamic", "pre_registered", "metadata_document"]),
   clientName: z.string().min(1).optional(),
   clientUri: z.string().url().optional(),
