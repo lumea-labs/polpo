@@ -252,11 +252,19 @@ function normalizeTokens(tokens: Record<string, unknown>, fallbackScopes: string
   return {
     accessToken,
     refreshToken: text(tokens.refresh_token) ?? fallbackRefreshToken,
-    tokenType: text(tokens.token_type) ?? "Bearer",
+    tokenType: canonicalTokenType(text(tokens.token_type)),
     expiresAt: expiresIn === undefined ? undefined : new Date(now.getTime() + expiresIn * 1000).toISOString(),
     scopes: normalizeScopes(typeof tokens.scope === "string" ? tokens.scope.split(/[,\s]+/) : fallbackScopes),
     raw: tokens,
   };
+}
+
+/** OAuth token type names are case-insensitive. Emit the interoperable
+ * canonical spelling for Bearer because some protected resources compare the
+ * scheme literally even though RFC 6750 does not permit that distinction. */
+function canonicalTokenType(value: string | undefined): string {
+  if (!value) return "Bearer";
+  return value.toLowerCase() === "bearer" ? "Bearer" : value;
 }
 
 function normalizeHttpsUrl(value: string): string {

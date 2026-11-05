@@ -200,6 +200,35 @@ describe("ConnectService MCP OAuth", () => {
     });
   });
 
+  it("canonicalizes Bearer token schemes from providers and legacy stored credentials", async () => {
+    exchangeMock.mockResolvedValueOnce({
+      access_token: "vendor-access",
+      refresh_token: "vendor-refresh",
+      token_type: "bearer",
+      expires_in: 3600,
+      scope: "tools:read",
+    });
+    const { service, secrets } = harness();
+    const connection = await connect(service);
+
+    await expect(service.getToken({ connectionId: connection.id, scopes: ["tools:read"] }))
+      .resolves.toMatchObject({ accessToken: "vendor-access", tokenType: "Bearer" });
+    await expect(secrets.getSecret(connection.secretRef!)).resolves.toMatchObject({
+      mcpOAuth: { tokens: { tokenType: "Bearer" } },
+    });
+
+    const stored = await secrets.getSecret(connection.secretRef!);
+    await secrets.setSecret(connection.secretRef!, {
+      ...stored!,
+      mcpOAuth: {
+        ...stored!.mcpOAuth!,
+        tokens: { ...stored!.mcpOAuth!.tokens!, tokenType: "bEaReR" },
+      },
+    });
+    await expect(service.resolveCredential({ connectionId: connection.id, scopes: ["tools:read"] }))
+      .resolves.toMatchObject({ accessToken: "vendor-access", tokenType: "Bearer" });
+  });
+
   it("discovers vendor OAuth scopes without dropping Polpo MCP capabilities", async () => {
     discoverMock.mockResolvedValue({
       authorizationServerUrl: "https://auth.example/",

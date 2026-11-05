@@ -1657,7 +1657,7 @@ export function createConnectService(options: CreateConnectServiceOptions): Conn
           return {
             kind: "mcp",
             accessToken: material.tokens!.accessToken,
-            tokenType: material.tokens!.tokenType ?? "Bearer",
+            tokenType: canonicalTokenType(material.tokens!.tokenType),
             expiresAt: material.tokens!.expiresAt,
             scopes: material.authorizationScopes !== undefined
               ? scopes
@@ -1777,7 +1777,7 @@ export function createConnectService(options: CreateConnectServiceOptions): Conn
       return {
         kind: "oauth2",
         accessToken: tokens.accessToken,
-        tokenType: tokens.tokenType ?? "Bearer",
+        tokenType: canonicalTokenType(tokens.tokenType),
         expiresAt: tokens.expiresAt,
         scopes: current.grantedScopes.filter((scope) => (tokens.scopes ?? current.grantedScopes).includes(scope)),
         connectionId: connection.id,
@@ -1806,7 +1806,7 @@ export function createConnectService(options: CreateConnectServiceOptions): Conn
         }
         return {
           accessToken: credential.accessToken,
-          tokenType: credential.tokenType ?? "Bearer",
+          tokenType: canonicalTokenType(credential.tokenType),
           scopes: credential.scopes,
           connectionId: credential.connectionId,
           providerId: credential.providerId,
@@ -1856,7 +1856,7 @@ export function createConnectService(options: CreateConnectServiceOptions): Conn
             ? credential.accessToken
             : undefined;
         const tokenType = credential.kind === "oauth2" || credential.kind === "mcp"
-          ? credential.tokenType ?? "Bearer"
+          ? canonicalTokenType(credential.tokenType)
           : "Bearer";
 
         let url = new URL(resolvedRequest.url);
@@ -2354,7 +2354,7 @@ function normalizeTokenSet(payload: ProviderTokenResponse, scopes: string[], now
   return {
     accessToken: payload.access_token,
     refreshToken: payload.refresh_token ?? fallbackRefreshToken,
-    tokenType: payload.token_type ?? "Bearer",
+    tokenType: canonicalTokenType(payload.token_type),
     expiresAt: typeof payload.expires_in === "number" ? new Date(now.getTime() + payload.expires_in * 1000).toISOString() : undefined,
     scopes: normalizeScopes(scopes),
     raw: payload,
@@ -2406,7 +2406,16 @@ function omitInternalMcpStateMetadata(metadata: Record<string, unknown> | undefi
 
 function readTokenType(secret: StoredConnectionSecret): string {
   const tokenType = secret.metadata?.tokenType;
-  return typeof tokenType === "string" && tokenType.trim() ? tokenType.trim() : "Bearer";
+  return canonicalTokenType(typeof tokenType === "string" ? tokenType : undefined);
+}
+
+/** OAuth auth-scheme names are case-insensitive, but a few vendor gateways
+ * incorrectly require the conventional `Bearer` spelling. Canonicalize both
+ * newly issued and already persisted credentials at the delivery boundary. */
+function canonicalTokenType(value: string | undefined): string {
+  const normalized = value?.trim();
+  if (!normalized) return "Bearer";
+  return normalized.toLowerCase() === "bearer" ? "Bearer" : normalized;
 }
 
 function createId(prefix: string): string {
