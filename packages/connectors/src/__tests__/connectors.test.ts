@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { createConnectorRegistry } from "@polpo-ai/connect";
-import { createGenericOAuthConnector, defaultConnectors, githubConnector, googleDriveConnector, mcpUrlConnector, slackConnector } from "../index.js";
+import {
+  createGenericOAuthConnector,
+  defaultConnectorContributionRegistry,
+  defaultConnectors,
+  githubConnector,
+  googleDriveConnector,
+  mcpUrlConnector,
+  slackConnector,
+} from "../index.js";
 
 describe("curated connectors", () => {
   it("has unique valid provider definitions", () => {
@@ -24,6 +32,23 @@ describe("curated connectors", () => {
     expect(slackConnector.actions?.map((action) => action.id)).toContain("slack_send_message");
     expect(googleDriveConnector.actions?.map((action) => action.id)).toContain("drive_search_files");
     expect(mcpUrlConnector.actions?.map((action) => action.id)).toContain("mcp_call_tool");
+  });
+
+  it("composes curated API integrations without a central action switch", () => {
+    expect(defaultConnectorContributionRegistry.definitions().map((entry) => entry.id))
+      .toEqual(["github", "slack", "google_drive", "gmail"]);
+    expect(defaultConnectorContributionRegistry.tools().map((tool) => tool.name))
+      .toEqual([
+        "github_list_repos",
+        "github_create_issue",
+        "github_read_file",
+        "slack_list_channels",
+        "slack_send_message",
+        "drive_search_files",
+        "drive_read_file",
+        "gmail_search_messages",
+        "gmail_read_message",
+      ]);
   });
 
   it("ships bounded gateway policies without OAuth client secrets", () => {

@@ -1,5 +1,7 @@
 import type { ConnectorProviderDefinition } from "@polpo-ai/connect";
 import { gmailConnector } from "./google.js";
+export * from "./contribution.js";
+export * from "./contributions/index.js";
 export * from "./google.js";
 
 export const apiKeyConnector: ConnectorProviderDefinition = {
@@ -114,11 +116,13 @@ export const slackConnector: ConnectorProviderDefinition = {
       risk: "write",
     },
   ],
-  triggers: [
-    { id: "slack_message_posted", label: "Message posted", scopes: ["channels:read"] },
-  ],
+  triggers: [{ id: "slack_message_posted", label: "Message posted", scopes: ["channels:read"] }],
 };
 
+/**
+ * Legacy compatibility projection. New hosts should consume
+ * googleDriveContribution/googleDriveDefinition, whose policy is read-only.
+ */
 export const googleDriveConnector: ConnectorProviderDefinition = {
   id: "google_drive",
   name: "Google Drive",
@@ -128,10 +132,7 @@ export const googleDriveConnector: ConnectorProviderDefinition = {
     authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
     tokenUrl: "https://oauth2.googleapis.com/token",
     defaultScopes: ["https://www.googleapis.com/auth/drive.readonly"],
-    extraAuthorizeParams: {
-      access_type: "offline",
-      prompt: "consent",
-    },
+    extraAuthorizeParams: { access_type: "offline", prompt: "consent" },
   },
   scopes: [
     { id: "https://www.googleapis.com/auth/drive.readonly", label: "Read Drive files" },
