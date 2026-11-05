@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createConnectorRegistry, type ConnectorActionGateway } from "@polpo-ai/connect";
-import { createConnectorContributionRegistry } from "../contribution.js";
-import { githubContribution } from "../contributions/github/index.js";
+import { createConnectorContributionRegistry } from "../../contribution.js";
+import { githubContribution } from "./index.js";
 
 describe("GitHub Connector contribution", () => {
   it("owns its complete definition and executes only through the authorized gateway", async () => {

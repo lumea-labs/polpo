@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { type ConnectorActionGateway } from "@polpo-ai/connect";
-import { createConnectorContributionRegistry } from "../contribution.js";
-import { slackContribution } from "../contributions/slack/index.js";
+import { createConnectorContributionRegistry } from "../../contribution.js";
+import { slackContribution } from "./index.js";
 
 describe("Slack Connector contribution", () => {
   it("lists conversations through the gateway with bounded pagination", async () => {
